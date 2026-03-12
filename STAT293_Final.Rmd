@@ -1,0 +1,539 @@
+---
+title: "stat293 final"
+author: "Luhan Tang, Chenguang Yang"
+date: "2026-03"
+output: html_document
+---
+
+```{r}
+
+library(tidyverse)
+library(corrplot)
+library(car)
+library(MASS)
+library(lmtest)
+library(sandwich)
+library(mice)
+library(broom)
+library(naniar)
+library(rpart)
+library(rpart.plot)
+library(lme4)
+library(splines)
+
+select <- dplyr::select
+theme_set(theme_minimal())
+set.seed(123)
+```
+
+```{r}
+load("housing.rdata")
+loaded_objs <- ls()
+cat("Objects loaded:", paste(loaded_objs, collapse = ", "), "\n")
+df <- housing_data
+
+cat("Using object: housing_data |", nrow(df), "rows x", ncol(df), "cols\n")
+cat("Columns:", paste(names(df), collapse = ", "), "\n")
+
+dim(df)
+str(df)
+head(df)
+```
+
+
+```{r}
+cat("\nColumn names in dataset:\n")
+print(names(df))
+
+if ("chas" %in% names(df)) {
+  df <- df %>%
+    mutate(chas = factor(chas, levels = c(0, 1), labels = c("No", "Yes")))
+}
+
+numeric_cols <- c("crim", "zn", "indus", "nox", "rm", "age",
+                  "dis", "rad", "tax", "ptratio", "b", "lstat",
+                  "cmedv", "lon", "lat")
+numeric_cols <- intersect(numeric_cols, names(df))
+
+df <- df %>%
+  mutate(across(all_of(numeric_cols), ~ as.numeric(as.character(.))))
+
+cat("Numeric coercion applied to:", paste(numeric_cols, collapse = ", "), "\n")
+
+df <- df %>%
+  mutate(
+    log_crim  = ifelse(!is.na(crim), log(crim + 1), NA_real_),
+    log_nox   = ifelse(!is.na(nox), log(nox), NA_real_),
+    log_lstat = ifelse(!is.na(lstat), log(lstat), NA_real_),
+    log_dis   = ifelse(!is.na(dis), log(dis), NA_real_),
+    log_cmedv = ifelse(!is.na(cmedv), log(cmedv), NA_real_)
+  )
+
+```
+
+
+```{r}
+if (all(c("lon", "lat") %in% names(df))) {
+  cat("Longitude and latitude are available and will be used in the spatial model.\n")
+} else {
+  cat("Longitude/latitude not found; spatial model cannot be fit as planned.\n")
+}
+
+stopifnot(all(c("cmedv", "log_cmedv") %in% names(df)))
+
+# Variables used in EDA
+cont_vars_eda <- c("log_nox", "rm", "log_lstat", "log_crim",
+                   "age", "log_dis", "ptratio", "b")
+cont_vars_eda <- intersect(cont_vars_eda, names(df))
+
+par(mfrow = c(1, 2))
+hist(df$cmedv, breaks = 30, main = "cmedv (raw)",
+     xlab = "Median Home Value", col = "steelblue")
+hist(df$log_cmedv, breaks = 30, main = "log(cmedv)",
+     xlab = "log Median Home Value", col = "coral")
+par(mfrow = c(1, 1))
+
+cat("\n--- Ceiling check at cmedv = 50 ---\n")
+print(table(df$cmedv == 50, useNA = "ifany"))
+
+sum_vars <- intersect(c("cmedv","nox","rm","lstat","crim","age","dis",
+                        "rad","tax","ptratio","b","zn","indus","chas","lon","lat"),
+                      names(df))
+cat("\n--- Summary table ---\n")
+print(summary(df %>% dplyr::select(all_of(sum_vars))))
+
+if (length(cont_vars_eda) > 0) {
+  df_long <- df %>%
+    dplyr::select(all_of(cont_vars_eda)) %>%
+    tidyr::pivot_longer(everything(), names_to = "variable", values_to = "value")
+
+  print(
+    ggplot(df_long, aes(x = value)) +
+      geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+      facet_wrap(~ variable, scales = "free") +
+      labs(title = "Distribution of EDA Variables", x = NULL, y = "Count")
+  )
+}
+
+if (length(cont_vars_eda) > 0) {
+  print(
+    df %>%
+      dplyr::select(log_cmedv, all_of(cont_vars_eda)) %>%
+      tidyr::pivot_longer(-log_cmedv, names_to = "variable", values_to = "value") %>%
+      ggplot(aes(x = value, y = log_cmedv)) +
+      geom_point(alpha = 0.3, size = 0.8) +
+      geom_smooth(method = "loess", se = FALSE, color = "red", linewidth = 0.8) +
+      facet_wrap(~ variable, scales = "free_x") +
+      labs(title = "log(cmedv) vs Predictors (LOESS)", x = NULL, y = "log(cmedv)")
+  )
+}
+
+eda_vars <- intersect(c("log_cmedv", cont_vars_eda), names(df))
+num_df <- df %>% dplyr::select(all_of(eda_vars)) %>% na.omit()
+
+if (nrow(num_df) > 5) {
+  cor_mat <- cor(num_df, method = "pearson")
+  corrplot(cor_mat, method = "color", type = "lower",
+           addCoef.col = "black", number.cex = 0.6,
+           tl.cex = 0.75, title = "Correlation Matrix",
+           mar = c(0, 0, 2, 0))
+}
+
+if ("chas" %in% names(df)) {
+  print(
+    ggplot(df, aes(x = chas, y = log_cmedv, fill = chas)) +
+      geom_boxplot(alpha = 0.7) +
+      labs(title = "log(cmedv) by Charles River Adjacency",
+           x = "Bounds Charles River", y = "log(cmedv)") +
+      theme(legend.position = "none")
+  )
+}
+
+if (all(c("lon", "lat", "log_cmedv") %in% names(df))) {
+  print(
+    ggplot(df, aes(x = lon, y = lat, color = log_cmedv)) +
+      geom_point(size = 2, alpha = 0.8) +
+      labs(title = "Spatial distribution of log(cmedv)",
+           x = "Longitude", y = "Latitude", color = "log(cmedv)")
+  )
+}
+
+cat("\n========== EDA complete ==========\n")
+
+```
+
+```{r}
+
+vars_diag <- c("log_cmedv", "log_nox", "rm", "log_lstat", "log_crim",
+               "age", "log_dis", "ptratio", "b", "chas",
+               "rad", "tax", "zn", "indus", "lon", "lat")
+vars_diag <- intersect(vars_diag, names(df))
+
+df_diag <- df %>% dplyr::select(all_of(vars_diag))
+
+cat("\n--- Missing value summary (%) ---\n")
+miss_summary <- df_diag %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") %>%
+  arrange(desc(pct_missing))
+print(miss_summary)
+
+vars_with_miss <- miss_summary %>% filter(pct_missing > 0) %>% pull(variable)
+
+if (length(vars_with_miss) > 0) {
+  cat("\nVariables with missing data:", paste(vars_with_miss, collapse = ", "), "\n")
+  print(vis_miss(df_diag) + labs(title = "Missingness Pattern"))
+  print(gg_miss_var(df_diag) + labs(title = "% Missing per Variable"))
+}
+
+mcar_result <- tryCatch(
+  naniar::mcar_test(df_diag),
+  error = function(e) { cat("MCAR test error:", conditionMessage(e), "\n"); NULL }
+)
+if (!is.null(mcar_result)) print(mcar_result)
+
+
+```
+
+
+```{r}
+# ── 8. Missingness decision-tree diagnostics ────────────────
+miss_tree_fit <- function(var, data) {
+  r <- as.integer(is.na(data[[var]]))
+  if (mean(r) == 0 || mean(r) == 1) return(NULL)
+
+  predictors <- setdiff(names(data), var)
+
+  df_sub <- data %>%
+    dplyr::select(all_of(predictors)) %>%
+    mutate(R = factor(r, levels = c(0, 1)))
+
+  fit <- rpart(
+    R ~ .,
+    data = df_sub,
+    method = "class",
+    na.action = na.rpart,
+    model = TRUE,
+    control = rpart.control(cp = 0.01, maxdepth = 3, minsplit = 20)
+  )
+
+  pred <- predict(fit, type = "class")
+  acc  <- mean(pred == df_sub$R, na.rm = TRUE)
+
+  list(tree = fit, acc = acc, n = nrow(df_sub), miss_rate = mean(r))
+}
+
+cat("\n--- Decision-tree missingness diagnostics ---\n")
+tree_results <- list()
+
+for (v in vars_with_miss) {
+  res <- miss_tree_fit(v, df_diag)
+  tree_results[[v]] <- res
+  if (is.null(res)) {
+    cat(sprintf("  %-12s : skipped\n", v))
+  } else {
+    cat(sprintf("  %-12s : missing_rate=%.1f%%, n_used=%d, tree_acc=%.3f\n",
+                v, 100 * res$miss_rate, res$n, res$acc))
+  }
+}
+
+# Show one illustrative tree: highest missing variable
+if (length(vars_with_miss) > 0) {
+  v_show <- vars_with_miss[1]
+  if (!is.null(tree_results[[v_show]])) {
+    cat(sprintf("\n--- Example missingness tree for '%s' ---\n", v_show))
+    rpart.plot(tree_results[[v_show]]$tree,
+               main = paste("Missingness decision tree:", v_show),
+               type = 4, extra = 104, fallen.leaves = TRUE)
+  }
+}
+
+```
+
+
+```{r}
+predictor_pool <- c("log_cmedv", "log_nox", "rm", "log_lstat", "log_crim",
+                    "age", "log_dis", "ptratio", "b", "chas",
+                    "rad", "tax", "zn", "indus", "lon", "lat")
+predictor_pool <- intersect(predictor_pool, names(df_diag))
+
+logit_results <- list()
+
+for (v in vars_with_miss) {
+  this_preds <- setdiff(predictor_pool, v)
+  if (length(this_preds) == 0) next
+
+  dat_glm <- df_diag %>%
+    mutate(R_obs = as.integer(!is.na(.data[[v]]))) %>%
+    dplyr::select(R_obs, all_of(this_preds)) %>%
+    drop_na()
+
+  if (nrow(dat_glm) < 50 || length(unique(dat_glm$R_obs)) < 2) {
+    cat(sprintf("%-12s : skipped (insufficient complete rows)\n", v))
+    next
+  }
+
+  fit_glm <- tryCatch(
+    glm(R_obs ~ ., data = dat_glm, family = binomial),
+    error = function(e) NULL
+  )
+
+  if (is.null(fit_glm)) {
+    cat(sprintf("%-12s : model failed\n", v))
+    next
+  }
+
+  # Use Wald CI (manual) for stability; profile-likelihood CI can fail for some fits.
+  tidy_glm <- broom::tidy(fit_glm) %>%
+    mutate(
+      conf.low = estimate - 1.96 * std.error,
+      conf.high = estimate + 1.96 * std.error,
+      OR = exp(estimate),
+      OR_low = exp(conf.low),
+      OR_high = exp(conf.high)
+    ) %>%
+    filter(term != "(Intercept)") %>%
+    arrange(p.value) %>%
+    dplyr::select(term, OR, OR_low, OR_high, std.error, statistic, p.value)
+
+  logit_results[[v]] <- tidy_glm
+
+  cat(sprintf("\n%s | n=%d | missing=%.1f%%\n", v, nrow(dat_glm), mean(is.na(df_diag[[v]])) * 100))
+  print(head(tidy_glm, 8))
+}
+
+```
+
+
+```{r}
+vars_mice <- c("cmedv", "nox", "rm", "lstat", "crim", "age", "dis",
+               "ptratio", "b", "chas", "lon", "lat", "tax", "rad", "zn", "indus")
+vars_mice <- intersect(vars_mice, names(df))
+
+df_mice <- df %>% dplyr::select(all_of(vars_mice))
+
+meth <- make.method(df_mice)
+for (v in names(df_mice)) {
+  if (is.numeric(df_mice[[v]])) meth[v] <- "pmm"
+  if (is.factor(df_mice[[v]]))  meth[v] <- "logreg"
+}
+
+pred <- make.predictorMatrix(df_mice)
+diag(pred) <- 0
+
+imp <- mice(
+  df_mice,
+  m = 30,
+  method = meth,
+  predictorMatrix = pred,
+  seed = 123,
+  maxit = 20,
+  printFlag = FALSE
+)
+cat("MICE complete.\n")
+
+df_clean <- complete(imp, action = 1) %>%
+  mutate(
+    log_cmedv = log(cmedv),
+    log_nox   = log(nox),
+    log_lstat = log(lstat),
+    log_crim  = log(crim + 1),
+    log_dis   = log(dis)
+  )
+
+```
+
+
+```{r}
+
+needed_base <- c("cmedv", "nox", "rm", "lstat", "crim", "age", "dis", "ptratio", "b", "chas")
+stopifnot(all(needed_base %in% names(df_mice)))
+
+has_spatial <- all(c("lon", "lat") %in% names(df_mice))
+cat("Spatial coordinates available:", has_spatial, "\n")
+
+form_m1 <- as.formula(
+  "log(cmedv) ~ splines::ns(log(nox), df = 4) + rm + log(lstat) + log(crim + 1) + age + log(dis) + ptratio + b + chas"
+)
+
+fit_m1 <- with(
+  imp,
+  lm(
+    log(cmedv) ~ splines::ns(log(nox), df = 4) + rm + log(lstat) +
+      log(crim + 1) + age + log(dis) + ptratio + b + chas
+  )
+)
+
+cat("\n--- Model 1 complete ---\n")
+
+imp_list <- complete(imp, action = "all")
+
+fit_m2_list <- list()
+if (has_spatial) {
+  form_m2 <- update(form_m1, . ~ . + (1 | spatial_cell))
+
+  for (i in seq_along(imp_list)) {
+    dat_i <- imp_list[[i]] %>%
+      mutate(
+        spatial_cell = interaction(
+          cut(lon, breaks = 4, include.lowest = TRUE),
+          cut(lat, breaks = 4, include.lowest = TRUE),
+          drop = TRUE
+        )
+      )
+
+    fit_m2_list[[i]] <- lme4::lmer(form_m2, data = dat_i, REML = FALSE)
+  }
+
+  cat("--- Model 2 complete ---\n")
+}
+
+```
+
+```{r}
+
+pool_rubin <- function(beta_mat, vcov_list) {
+  M <- nrow(beta_mat)
+  qbar <- colMeans(beta_mat)
+  W <- Reduce("+", vcov_list) / M
+  B <- stats::cov(beta_mat)
+  Tmat <- W + (1 + 1 / M) * B
+
+  w_diag <- diag(W)
+  b_diag <- diag(B)
+  t_diag <- diag(Tmat)
+  se <- sqrt(t_diag)
+
+  r <- ((1 + 1 / M) * b_diag) / w_diag
+  r[!is.finite(r)] <- NA_real_
+  df <- (M - 1) * (1 + 1 / r)^2
+  tval <- qbar / se
+  pval <- 2 * stats::pt(abs(tval), df = df, lower.tail = FALSE)
+  ci_mult <- stats::qt(0.975, df = df)
+
+  tibble(
+    term = colnames(beta_mat),
+    estimate = qbar,
+    std.error = se,
+    statistic = tval,
+    df = df,
+    p.value = pval,
+    conf.low = qbar - ci_mult * se,
+    conf.high = qbar + ci_mult * se
+  )
+}
+
+cat("\n--- Pooled estimates: Model 1 (Rubin via mice::pool) ---\n")
+pool_m1 <- pool(fit_m1)
+pool_m1_tbl <- summary(pool_m1, conf.int = TRUE)
+print(pool_m1_tbl)
+
+if (has_spatial) {
+  beta_names <- names(lme4::fixef(fit_m2_list[[1]]))
+  beta_mat <- do.call(rbind, lapply(fit_m2_list, function(fm) lme4::fixef(fm)[beta_names]))
+  vcov_list <- lapply(
+    fit_m2_list,
+    function(fm) {
+      v <- as.matrix(vcov(fm))
+      v[beta_names, beta_names, drop = FALSE]
+    }
+  )
+
+  cat("\n--- Pooled estimates: Model 2 (Rubin manual for mixed model fixed effects) ---\n")
+  pool_m2_tbl <- pool_rubin(beta_mat, vcov_list)
+  print(pool_m2_tbl)
+}
+
+```
+
+```{r}
+cat("\n--- Model comparison across imputations ---\n")
+
+if (has_spatial) {
+  model_compare <- tibble(
+    imputation = seq_along(fit_m2_list),
+    AIC_m1 = sapply(fit_m1$analyses, AIC),
+    AIC_m2 = sapply(fit_m2_list, AIC)
+  ) %>%
+    mutate(delta_AIC = AIC_m1 - AIC_m2)
+
+  print(model_compare)
+  cat("\nAverage delta AIC (positive favors spatial random-effect model):\n")
+  print(mean(model_compare$delta_AIC, na.rm = TRUE))
+}
+
+```
+
+```{r}
+miss_pct <- colMeans(is.na(df_mice)) * 100
+sens_candidates <- c("cmedv", "nox", "lstat", "dis")
+sens_candidates <- intersect(sens_candidates, names(miss_pct))
+sens_candidates <- sens_candidates[miss_pct[sens_candidates] > 0]
+
+if (!has_spatial || length(sens_candidates) == 0) {
+  cat("Sensitivity analysis skipped (requires spatial model + missing numeric target).\n")
+} else {
+  sens_var <- if ("cmedv" %in% sens_candidates) "cmedv" else sens_candidates[1]
+  mis_idx <- is.na(df_mice[[sens_var]])
+  obs_sd <- sd(df_mice[[sens_var]], na.rm = TRUE)
+
+  delta_grid_sd <- c(-0.5, -0.25, 0, 0.25, 0.5)
+
+  adjust_bounds <- function(dat, v) {
+    if (v %in% c("cmedv", "nox", "lstat", "dis")) dat[[v]] <- pmax(dat[[v]], 1e-4)
+    if (v == "crim") dat[[v]] <- pmax(dat[[v]], -0.999)
+    dat
+  }
+
+  sens_rows <- list()
+  for (k in seq_along(delta_grid_sd)) {
+    d_sd <- delta_grid_sd[k]
+    d_raw <- d_sd * obs_sd
+
+    fit_delta <- list()
+    for (i in seq_along(imp_list)) {
+      dat_i <- imp_list[[i]]
+      dat_i[[sens_var]][mis_idx] <- dat_i[[sens_var]][mis_idx] + d_raw
+      dat_i <- adjust_bounds(dat_i, sens_var)
+
+      dat_i <- dat_i %>%
+        mutate(
+          spatial_cell = interaction(
+            cut(lon, breaks = 4, include.lowest = TRUE),
+            cut(lat, breaks = 4, include.lowest = TRUE),
+            drop = TRUE
+          )
+        )
+
+      fit_delta[[i]] <- lme4::lmer(form_m2, data = dat_i, REML = FALSE)
+    }
+
+    beta_names <- names(lme4::fixef(fit_delta[[1]]))
+    beta_mat <- do.call(rbind, lapply(fit_delta, function(fm) lme4::fixef(fm)[beta_names]))
+    vcov_list <- lapply(
+      fit_delta,
+      function(fm) {
+        v <- as.matrix(vcov(fm))
+        v[beta_names, beta_names, drop = FALSE]
+      }
+    )
+    pool_delta <- pool_rubin(beta_mat, vcov_list)
+
+    nox_idx <- grepl("splines::ns\\(log\\(nox\\), df = 4\\)", pool_delta$term)
+    nox_signal <- sqrt(sum(pool_delta$estimate[nox_idx]^2))
+
+    sens_rows[[k]] <- tibble(
+      variable = sens_var,
+      delta_sd = d_sd,
+      delta_raw = d_raw,
+      nox_spline_signal = nox_signal,
+      mean_AIC = mean(sapply(fit_delta, AIC))
+    )
+  }
+
+  sensitivity_results <- bind_rows(sens_rows)
+  cat("\nMNAR delta-adjustment sensitivity summary:\n")
+  print(sensitivity_results)
+}
+
+```
