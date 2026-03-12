@@ -1,79 +1,64 @@
 # STAT293 Final Project
 
-This repository contains the full workflow for the STAT 293 final project on Boston Housing data, including data preparation, missing-data diagnostics, multiple imputation, nonlinear/spatial modeling, sensitivity analysis, slides, and report outputs.
+This repository contains the complete analysis workflow for the STAT 293 final project on the Boston Housing dataset. The project focuses on exploratory data analysis, missing-data diagnostics, multiple imputation, regression modeling, and interpretation of housing-value relationships.
 
 ## Repository Structure
 
-- `housing.rdata`: input data object used in analysis.
-- `stat293 final.Rmd`: main analysis pipeline (missingness diagnostics, MICE, model fitting, pooling, MNAR sensitivity).
-- `STAT293_Final.html`: rendered analysis output from the R Markdown workflow.
-- `main.tex`: slide deck source.
-- `report.tex`: final technical report source.
-- `report.pdf`: compiled report.
-- `1.jpg`, `2.jpg`, `3.jpg`, `4.jpg`: EDA figures used in the report.
-- `Final_project_description.pdf`: course project requirements.
+- `STAT293_Final.Rmd`  
+  Main R Markdown file containing the full analysis pipeline. This is the primary source file to run if you want to reproduce the project results.
 
-## Reproducibility: Step-by-Step
+- `STAT293_Final.html`  
+  Rendered HTML output generated from `STAT293_Final.Rmd`. This file shows the final report/results without needing to rerun the code.
 
-## 1. Environment
+- `housing.rdata`  
+  Input dataset used by the analysis. The R Markdown file loads this file directly.
 
-Use R (recommended: `R >= 4.3`) with the following packages:
+- `README.md`  
+  Project overview and instructions for reproducing the analysis.
 
-- `tidyverse`
-- `corrplot`
-- `car`
-- `MASS`
-- `lmtest`
-- `sandwich`
-- `mice`
-- `broom`
-- `naniar`
-- `rpart`
-- `rpart.plot`
-- `lme4`
-- `splines` (base R)
+## What the Code Does
 
-For PDF compilation, use a LaTeX distribution with `pdflatex` (TinyTeX/TeX Live works).
+The analysis in `STAT293_Final.Rmd` includes the following main steps:
 
-## 2. Run the analysis
+1. Load the Boston Housing dataset from `housing.rdata`
+2. Clean variables and create transformed variables such as log-transformed predictors/outcomes
+3. Perform exploratory data analysis (EDA), including:
+   - histograms
+   - scatterplots with LOESS smoothers
+   - correlation analysis
+   - boxplots
+   - spatial plots
+4. Diagnose missing-data patterns using:
+   - missingness summaries
+   - visualization of missingness
+   - MCAR testing
+   - decision-tree missingness diagnostics
+   - logistic regression diagnostics for missingness
+5. Perform multiple imputation using `mice`
+6. Fit regression models on the imputed data
+7. Summarize and interpret model results
 
-From project root:
+## Requirements
 
-```bash
-Rscript -e "knitr::knit('stat293 final.Rmd', output='STAT293_Final.md')"
+You should use **R 4.3 or later** if possible.
+
+### Required R packages
+
+Install the following packages before running the project:
+
+```r
+install.packages(c(
+  "tidyverse",
+  "corrplot",
+  "car",
+  "MASS",
+  "lmtest",
+  "sandwich",
+  "mice",
+  "broom",
+  "naniar",
+  "rpart",
+  "rpart.plot",
+  "lme4"
+))
 ```
-
-Or render HTML (if Pandoc is available):
-
-```bash
-Rscript -e "rmarkdown::render('stat293 final.Rmd')"
-```
-
-This produces the analysis outputs used to populate model and sensitivity results in the report.
-
-## 3. Compile report
-
-```bash
-pdflatex report.tex
-pdflatex report.tex
-```
-
-Running twice resolves cross-references.
-
-## 4. Compile slides (optional)
-
-```bash
-pdflatex main.tex
-pdflatex main.tex
-```
-
-## Notes
-
-- The report includes pooled model results and MNAR sensitivity summaries from the analysis workflow.
-- Missing-data handling is a core analytical component (not a preprocessing footnote): diagnostics, MAR-based MI, and MNAR sensitivity are all included.
-- If you run on a different machine, record your R version and package versions for strict reproducibility.
-
-## Team
-
-- Luhan Tang
-- Chenguang Yang
